@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.user_id as user_id, u.name as name, u.avatar_s3 as avatar_s3, u.avatar_anilist as avatar_anilist, a.anime_id as anime_id, a.description as description, a.cover_s3 as cover_s3, a.cover_anilist as cover_anilist, a.average as average, a.native as native, a.romaji as romaji, a.english as english, l.user_title as user_title, l.start_day as start_day, l.end_day as end_day, l.score as score FROM lists as l INNER JOIN users as u ON l.user_id=u.user_id INNER JOIN anime as a ON l.anime_id=a.anime_id WHERE u.name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "avatar_s3",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "avatar_anilist",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "anime_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "cover_s3",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "cover_anilist",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "average",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 9,
+        "name": "native",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "romaji",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "english",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "user_title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "start_day",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 14,
+        "name": "end_day",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 15,
+        "name": "score",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8548ceffbc18e6d2904ff801affe0736543785e66a4ddf9ae291eaca67bb2dce"
+}

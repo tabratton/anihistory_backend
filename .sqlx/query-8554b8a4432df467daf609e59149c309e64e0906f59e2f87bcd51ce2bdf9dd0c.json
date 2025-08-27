@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT user_id, anime_id, user_title, start_day, end_day, score FROM lists WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "anime_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "start_day",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 4,
+        "name": "end_day",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 5,
+        "name": "score",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8554b8a4432df467daf609e59149c309e64e0906f59e2f87bcd51ce2bdf9dd0c"
+}

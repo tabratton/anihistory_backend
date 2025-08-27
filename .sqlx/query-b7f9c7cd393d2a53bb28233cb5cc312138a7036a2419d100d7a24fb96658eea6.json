@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM lists WHERE user_id = $1 AND anime_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b7f9c7cd393d2a53bb28233cb5cc312138a7036a2419d100d7a24fb96658eea6"
+}

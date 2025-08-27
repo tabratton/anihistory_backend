@@ -11,88 +11,99 @@ use anyhow::anyhow;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use chrono::NaiveDate;
+use futures_util::TryStreamExt;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
-use tokio_postgres::Row;
 use tracing::{error, info};
+
+struct ListResult {
+    user_id: i32,
+    name: String,
+    avatar_s3: String,
+    avatar_anilist: String,
+    anime_id: i32,
+    description: String,
+    cover_s3: String,
+    cover_anilist: String,
+    average: Option<i16>,
+    native: Option<String>,
+    romaji: Option<String>,
+    english: Option<String>,
+    user_title: Option<String>,
+    start_day: Option<NaiveDate>,
+    end_day: Option<NaiveDate>,
+    score: Option<i16>,
+}
+
+impl From<&ListResult> for ListItemMap {
+    fn from(list: &ListResult) -> Self {
+        let user = models::User {
+            user_id: list.user_id,
+            name: list.name.clone(),
+            avatar_s3: list.avatar_s3.clone(),
+            avatar_anilist: list.avatar_anilist.clone(),
+        };
+
+        let anime = models::Anime {
+            anime_id: list.anime_id,
+            description: list.description.clone(),
+            cover_s3: list.cover_s3.clone(),
+            cover_anilist: list.cover_anilist.clone(),
+            average: list.average,
+            native: list.native.clone(),
+            romaji: list.romaji.clone(),
+            english: list.english.clone(),
+        };
+
+        let list_item = ListItem {
+            user_id: list.user_id,
+            anime_id: list.anime_id,
+            user_title: list.user_title.clone(),
+            start_day: list.start_day,
+            end_day: list.end_day,
+            score: list.score,
+        };
+
+        ListItemMap {
+            user,
+            anime,
+            list_item,
+        }
+    }
+}
 
 pub async fn get_list(
     name: &str,
     pool: &DbPool,
 ) -> Result<Option<models::RestResponse>, anyhow::Error> {
-    let connection = pool.get().await?;
-    let stmt = connection
-        .prepare(
-            "SELECT u.user_id, u.name, u.avatar_s3, u.avatar_anilist, a.anime_id, a\
-	  .description, a.cover_s3, a.cover_anilist, a.average, a.native, a.romaji, a.english, l\
-	  .user_title, l.start_day, l.end_day, l.score FROM lists as l INNER JOIN users as u ON l\
-	  .user_id=u.user_id INNER JOIN anime as a ON l.anime_id=a.anime_id WHERE u.name = $1",
-        )
-        .await?;
-
-    match connection.query(&stmt, &[&name]).await {
-        Ok(result) => {
-            // TODO: write from/into for these structs
-            let database_list: Vec<models::ListItemMap> = result
-                .iter()
-                .map(|row| {
-                    let user = models::User {
-                        user_id: row.get(0),
-                        name: row.get(1),
-                        avatar_s3: row.get(2),
-                        avatar_anilist: row.get(3),
-                    };
-
-                    let anime = models::Anime {
-                        anime_id: row.get(4),
-                        description: row.get(5),
-                        cover_s3: row.get(6),
-                        cover_anilist: row.get(7),
-                        average: row.get(8),
-                        native: row.get(9),
-                        romaji: row.get(10),
-                        english: row.get(11),
-                    };
-
-                    let list_item = models::ListItem {
-                        user_id: row.get(0),
-                        anime_id: row.get(4),
-                        user_title: row.get(12),
-                        start_day: row.get(13),
-                        end_day: row.get(14),
-                        score: row.get(15),
-                    };
-
-                    models::ListItemMap {
-                        user,
-                        anime,
-                        list_item,
-                    }
-                })
-                .collect();
-
-            if !database_list.is_empty() {
-                let response_items: Vec<ResponseItem> =
-                    database_list.iter().map(|l| l.into()).collect();
-                Ok(Some(models::RestResponse {
-                    users: models::ResponseList {
-                        id: database_list[0].user.name.clone(),
-                        avatar: database_list[0].user.avatar_s3.clone(),
-                        list: response_items,
-                    },
-                }))
-            } else {
-                Ok(None)
-            }
-        }
+    let query = sqlx::query_as!(
+        ListResult,
+        "SELECT u.user_id as user_id, u.name as name, u.avatar_s3 as avatar_s3, u.avatar_anilist as avatar_anilist, a.anime_id as anime_id, a.description as description, a.cover_s3 as cover_s3, a.cover_anilist as cover_anilist, a.average as average, a.native as native, a.romaji as romaji, a.english as english, l.user_title as user_title, l.start_day as start_day, l.end_day as end_day, l.score as score FROM lists as l INNER JOIN users as u ON l.user_id=u.user_id INNER JOIN anime as a ON l.anime_id=a.anime_id WHERE u.name = $1",
+        &name
+    )
+    .fetch_all(pool);
+    let database_list: Vec<ListItemMap> = match query.await {
+        Ok(rows) => rows.iter().map(|row| row.into()).collect(),
         Err(error) => {
             error!(
                 "error getting list for user_name={}. Error: {}",
                 name, error
             );
-            Err(anyhow!(error))
+            return Err(anyhow!(error));
         }
+    };
+
+    if database_list.is_empty() {
+        return Ok(None);
     }
+
+    Ok(Some(models::RestResponse {
+        users: models::ResponseList {
+            id: database_list[0].user.name.clone(),
+            avatar: database_list[0].user.avatar_s3.clone(),
+            list: database_list.iter().map(|l| l.into()).collect(),
+        },
+    }))
 }
 
 pub async fn update_user_profile(
@@ -112,32 +123,25 @@ pub async fn update_user_profile(
         avatar_anilist: user.avatar.large.clone(),
     };
 
-    let connection = pool.get().await?;
-    let stmt = connection.prepare("INSERT INTO users (user_id, name, avatar_s3, avatar_anilist) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id) DO UPDATE SET name = excluded.name, avatar_s3 = excluded.avatar_s3, avatar_anilist = excluded.avatar_anilist").await?;
-
-    let result = connection
-        .execute(
-            &stmt,
-            &[
-                &new_user.user_id,
-                &new_user.name,
-                &new_user.avatar_s3,
-                &new_user.avatar_anilist,
-            ],
-        )
-        .await;
+    let result = sqlx::query!(
+        "INSERT INTO users (user_id, name, avatar_s3, avatar_anilist) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id) DO UPDATE SET name = excluded.name, avatar_s3 = excluded.avatar_s3, avatar_anilist = excluded.avatar_anilist",
+        &new_user.user_id,
+        &new_user.name,
+        &new_user.avatar_s3,
+        &new_user.avatar_anilist,
+    )
+    .execute(pool);
 
     // Download their avatar and upload to S3.
     let content = download_image(&user.avatar.large).await?;
     upload_to_s3(s3_client, ImageTypes::User, user.id, ext.clone(), content).await?;
 
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            let error = format!("error saving user={:?}. Error: {}", new_user, err);
-            error!(error);
-            Err(anyhow!(error))
-        }
+    if let Err(err) = result.await {
+        let error = format!("error saving user={:?}. Error: {}", new_user, err);
+        error!(error);
+        Err(anyhow!(error))
+    } else {
+        Ok(())
     }
 }
 
@@ -146,7 +150,6 @@ pub async fn delete_entries(
     id: i32,
     pool: &DbPool,
 ) -> Result<(), anyhow::Error> {
-    let connection = pool.get().await?;
     let mut used_lists = Vec::new();
 
     for list in lists.iter_mut().filter(|list| {
@@ -158,55 +161,46 @@ pub async fn delete_entries(
         used_lists.push(list.clone());
     }
 
-    let stmt = connection.prepare("SELECT user_id, anime_id, user_title, start_day, end_day, score FROM lists WHERE user_id = $1").await?;
+    let mut user_db_list_result = sqlx::query_as!(
+        ListItem,
+        "SELECT user_id, anime_id, user_title, start_day, end_day, score FROM lists WHERE user_id = $1",
+        &id
+    )
+    .fetch(pool);
 
-    let user_db_list_result = connection.query(&stmt, &[&id]).await;
-
-    match user_db_list_result {
-        Ok(rows) => {
-            for row in rows.iter() {
-                let list_item: ListItem = row.into();
-
-                let mut found = false;
-
-                for list in used_lists.clone() {
-                    let result = list
-                        .entries
-                        .binary_search_by(|e| e.media.id.cmp(&list_item.anime_id));
-                    if result.is_ok() {
-                        found = true;
-                        break;
-                    }
-                }
-
-                if !found {
-                    println!("deleting anime:{}", list_item.anime_id);
-                    let stmt = connection
-                        .prepare("DELETE FROM lists WHERE user_id = $1 AND anime_id = $2")
-                        .await?;
-
-                    let delete_result = connection
-                        .execute(&stmt, &[&list_item.user_id, &list_item.anime_id])
-                        .await;
-
-                    if delete_result.is_err() {
-                        error!(
-                            "error deleting list_entry={:?}. Error: {}",
-                            row,
-                            delete_result.expect_err("?")
-                        );
-                    }
-                }
+    while let Some(list_item) = user_db_list_result.try_next().await? {
+        let mut found = false;
+        for list in used_lists.clone() {
+            let result = list
+                .entries
+                .binary_search_by(|e| e.media.id.cmp(&list_item.anime_id));
+            if result.is_ok() {
+                found = true;
+                break;
             }
-
-            Ok(())
         }
-        Err(err) => {
-            let error = format!("error retrieving list for user_id={:?}. Error: {}", id, err);
-            error!(error);
-            Err(anyhow!(error))
+
+        if !found {
+            println!("deleting anime:{}", list_item.anime_id);
+            let delete_result = sqlx::query!(
+                "DELETE FROM lists WHERE user_id = $1 AND anime_id = $2",
+                &list_item.user_id,
+                &list_item.anime_id
+            )
+            .execute(pool)
+            .await;
+
+            if delete_result.is_err() {
+                error!(
+                    "error deleting list_entry={:?}. Error: {}",
+                    list_item,
+                    delete_result.expect_err("?")
+                );
+            }
         }
     }
+
+    Ok(())
 }
 
 pub async fn update_entries(
@@ -217,7 +211,6 @@ pub async fn update_entries(
     let lists = anilist_query::get_lists(id).await?;
 
     delete_entries(lists.clone(), id, &pool).await?;
-    let connection = pool.get().await?;
 
     for list in lists.iter().filter(|list| {
         list.name.to_lowercase().contains("completed")
@@ -240,23 +233,19 @@ pub async fn update_entries(
                 english: entry.media.title.english.clone(),
             };
 
-            let stmt = connection.prepare("INSERT INTO anime (anime_id, description, cover_s3, cover_anilist, average, native, romaji, english) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (anime_id) DO UPDATE SET description = excluded.description, cover_s3 = excluded.cover_s3, cover_anilist = excluded.cover_anilist, average = excluded.average, native = excluded.native, romaji = excluded.romaji, english = excluded.english").await?;
-
-            let anime_result = connection
-                .execute(
-                    &stmt,
-                    &[
-                        &new_anime.anime_id,
-                        &new_anime.description,
-                        &new_anime.cover_s3,
-                        &new_anime.cover_anilist,
-                        &new_anime.average,
-                        &new_anime.native,
-                        &new_anime.romaji,
-                        &new_anime.english,
-                    ],
-                )
-                .await;
+            let anime_result = sqlx::query!(
+                "INSERT INTO anime (anime_id, description, cover_s3, cover_anilist, average, native, romaji, english) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (anime_id) DO UPDATE SET description = excluded.description, cover_s3 = excluded.cover_s3, cover_anilist = excluded.cover_anilist, average = excluded.average, native = excluded.native, romaji = excluded.romaji, english = excluded.english",
+                &new_anime.anime_id,
+                &new_anime.description,
+                &new_anime.cover_s3,
+                &new_anime.cover_anilist,
+                new_anime.average,
+                new_anime.native,
+                new_anime.romaji,
+                new_anime.english,
+            )
+            .execute(&pool)
+            .await;
 
             match anime_result {
                 Ok(_) => {
@@ -297,21 +286,17 @@ pub async fn update_entries(
                 score: entry.score_raw,
             };
 
-            let stmt = connection.prepare("INSERT INTO lists (user_id, anime_id, user_title, start_day, end_day, score) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id, anime_id) DO UPDATE SET user_title = excluded.user_title, start_day = excluded.start_day, end_day = excluded.end_day, score = excluded.score").await?;
-
-            let list_result = connection
-                .execute(
-                    &stmt,
-                    &[
-                        &new_list.user_id,
-                        &new_list.anime_id,
-                        &new_list.user_title,
-                        &new_list.start_day,
-                        &new_list.end_day,
-                        &new_list.score,
-                    ],
-                )
-                .await;
+            let list_result = sqlx::query!(
+              "INSERT INTO lists (user_id, anime_id, user_title, start_day, end_day, score) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id, anime_id) DO UPDATE SET user_title = excluded.user_title, start_day = excluded.start_day, end_day = excluded.end_day, score = excluded.score",
+                &new_list.user_id,
+                &new_list.anime_id,
+                new_list.user_title,
+                new_list.start_day,
+                new_list.end_day,
+                new_list.score,
+            )
+            .execute(&pool)
+            .await;
 
             if list_result.is_err() {
                 error!(
@@ -416,19 +401,6 @@ impl From<&ListItemMap> for ResponseItem {
             description: list_item.anime.description.clone(),
             cover: list_item.anime.cover_s3.clone(),
             id: list_item.anime.anime_id,
-        }
-    }
-}
-
-impl From<&Row> for ListItem {
-    fn from(row: &Row) -> Self {
-        Self {
-            user_id: row.get(0),
-            anime_id: row.get(1),
-            user_title: row.get(2),
-            start_day: row.get(3),
-            end_day: row.get(4),
-            score: row.get(5),
         }
     }
 }

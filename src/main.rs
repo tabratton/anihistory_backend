@@ -13,11 +13,9 @@ use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use bb8::Pool;
-use bb8_postgres::PostgresConnectionManager;
-use std::str::FromStr;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Pool, Postgres};
 use std::sync::Arc;
-use tokio_postgres::{Config, NoTls};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -28,7 +26,7 @@ mod anilist_query;
 mod database;
 mod models;
 
-type DbPool = Pool<PostgresConnectionManager<NoTls>>;
+type DbPool = Pool<Postgres>;
 
 async fn user(State(pool): State<DbPool>, Path(username): Path<String>) -> impl IntoResponse {
     match database::get_list(username.as_ref(), &pool).await {
@@ -70,9 +68,10 @@ async fn main() -> Result<(), anyhow::Error> {
     setup_logging();
 
     let postgres_url = std::env::var("DATABASE_URL")?;
-    let postgres_config = Config::from_str(postgres_url.as_ref())?;
-    let manager = PostgresConnectionManager::new(postgres_config, NoTls);
-    let db_pool = Pool::builder().max_size(10).build(manager).await?;
+    let db_pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(postgres_url.as_ref())
+        .await?;
 
     let region_provider = RegionProviderChain::first_try(Region::new("us-east-1"));
     let shared_config = aws_config::from_env().region(region_provider).load().await;
