@@ -5,102 +5,116 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-
-#![feature(proc_macro_hygiene, decl_macro)]
-
-use rocket::get;
-use rocket::http::Method;
-use rocket::post;
-use rocket::response::status::Accepted;
-use rocket::response::status::NotFound;
-use rocket::routes;
-use rocket_contrib::database;
-use rocket_contrib::databases::postgres;
-use rocket_contrib::json::Json;
-use rocket_contrib::serve::StaticFiles;
-use rocket_cors::Error;
-use rocket_cors::{AllowedHeaders, AllowedOrigins};
-use std::thread;
+use axum::extract::{FromRef, Path, State};
+use axum::http::{Method, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
+use bb8::Pool;
+use bb8_postgres::PostgresConnectionManager;
+use std::str::FromStr;
+use tokio_postgres::{Config, NoTls};
+use tower_http::cors::{Any, CorsLayer};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry};
 
 mod anilist_models;
 mod anilist_query;
 mod database;
 mod models;
 
-#[database("postgres_connection")]
-pub struct PgDbConn(postgres::Connection);
+type DbPool = Pool<PostgresConnectionManager<NoTls>>;
 
-#[get("/users/<username>")]
-fn user(
-    username: String,
-    database_conn: PgDbConn,
-) -> Result<Json<models::RestResponse>, NotFound<String>> {
-    match database::get_list(username.as_ref(), &database_conn) {
-        Some(list) => Ok(Json(list)),
-        None => Err(NotFound("User or list not found".to_owned())),
+async fn user(State(pool): State<DbPool>, Path(username): Path<String>) -> impl IntoResponse {
+    match database::get_list(username.as_ref(), &pool).await {
+        Ok(Some(list)) => Ok(Json(list)),
+        Ok(None) => Err((StatusCode::NOT_FOUND, "User or list not found".to_string())),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )),
     }
 }
 
-#[post("/users/<username>")]
-fn update(username: String, database_conn: PgDbConn) -> Result<Accepted<String>, NotFound<String>> {
-    match anilist_query::get_id(username.as_ref()) {
-        Some(user) => {
-            database::update_user_profile(user.clone(), &database_conn);
-            thread::spawn(move || database::update_entries(user.id));
-            Ok(Accepted(Some("Added to the queue".to_owned())))
+async fn update(
+    State(database_conn): State<DbPool>,
+    Path(username): Path<String>,
+) -> impl IntoResponse {
+    match anilist_query::get_id(username.as_ref()).await {
+        Ok(Some(user)) => {
+            let pool = database_conn.clone();
+            if let Err(err) = database::update_user_profile(user.clone(), &pool).await {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+            }
+
+            tokio::spawn(async move { database::update_entries(user.id, pool).await });
+            Ok((StatusCode::ACCEPTED, "Added to the queue".to_string()))
         }
-        None => Err(NotFound("User not found".to_owned())),
+        Ok(None) => Err((StatusCode::NOT_FOUND, "User not found".to_string())),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "User not found".to_string(),
+        )),
     }
 }
 
-fn main() -> Result<(), Error> {
-    if setup_logger().is_err() {
-        std::process::abort()
-    }
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    setup_logging();
 
-    let allowed_origins = AllowedOrigins::some_exact(&[
-        "http://localhost:4200",
-        "https://anihistory.moe",
-        "https://www.anihistory.moe",
-    ]);
+    let postgres_url = std::env::var("DATABASE_URL")?;
+    let postgres_config = Config::from_str(postgres_url.as_ref())?;
+    let manager = PostgresConnectionManager::new(postgres_config, NoTls);
+    let pool = Pool::builder().max_size(10).build(manager).await?;
 
-    // You can also deserialize this
-    let cors = rocket_cors::CorsOptions {
-        allowed_origins,
-        allowed_methods: vec![Method::Get, Method::Post]
-            .into_iter()
-            .map(From::from)
-            .collect(),
-        allowed_headers: AllowedHeaders::all(),
-        allow_credentials: true,
-        ..Default::default()
-    }
-    .to_cors()?;
+    let allowed_origins = [
+        "http://localhost:4200".parse()?,
+        "https://anihistory.moe".parse()?,
+        "https://www.anihistory.moe".parse()?,
+    ];
 
-    rocket::ignite()
-        .mount("/", StaticFiles::from("static"))
-        .mount("/", routes![update, user])
-        .attach(cors)
-        .attach(PgDbConn::fairing())
-        .launch();
+    let app_state = AppState { pool };
+
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        // allow `GET` and `POST` when accessing the resource
+        .allow_methods([Method::GET, Method::POST])
+        // allow requests from any origin
+        .allow_credentials(true)
+        .allow_headers(Any);
+
+    let app: Router<()> = Router::new()
+        .route("/users/{username}", get(user).post(update))
+        .with_state(app_state)
+        .layer(cors);
+
+    let addr = format!(
+        "0.0.0.0:{}",
+        std::env::var("PORT").unwrap_or("8080".to_string())
+    );
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
 
-fn setup_logger() -> Result<(), fern::InitError> {
-    fern::Dispatch::new()
-        .format(move |out, message, record| {
-            out.finish(format_args!(
-                "{}[{}][{}] {}",
-                chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
-                record.level(),
-                record.target(),
-                message
-            ))
-        })
-        .level(log::LevelFilter::Info)
-        .chain(std::io::stdout())
-        .chain(fern::log_file("trx.log")?)
-        .apply()?;
-    Ok(())
+fn setup_logging() {
+    Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+
+#[derive(Clone)]
+struct AppState {
+    pool: DbPool,
+}
+
+impl FromRef<AppState> for DbPool {
+    fn from_ref(state: &AppState) -> Self {
+        state.pool.clone()
+    }
 }

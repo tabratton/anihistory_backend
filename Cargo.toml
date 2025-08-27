@@ -2,21 +2,23 @@
 name = "anihistory_server"
 version = "0.4.0"
 authors = ["Tyler Bratton <tylerbratton96@gmail.com>"]
-edition = "2018"
+edition = "2024"
 
 [dependencies]
+anyhow = "1.0.99"
+axum = { version = "0.8.4", features = ["default", "tokio", "matched-path"] }
+bb8 = "0.9.0"
+bb8-postgres = "0.9.0"
 chrono = { version = "0.4.7", features = ["serde"] }
-dotenv = "0.15.0"
-log = "0.4.8"
-fern = "0.6.0"
-reqwest = { version = "0.11.3", features = ["blocking", "json"] }
-rocket = "0.4.2"
-rocket_contrib = { version="0.4.2", default-features=false, features=["postgres_pool", "json", "serve"] }
-rusoto_core = "0.42.0"
-rusoto_s3 = "0.42.0"
-rusoto_signature = "0.43.0"
+reqwest = { version = "0.12.23", features = ["json"] }
+rusoto_core = "0.48.0"
+rusoto_s3 = "0.48.0"
+rusoto_signature = "0.48.0"
+serde = "1.0.98"
 serde_derive = "1.0.98"
 serde_json = "1.0.40"
-serde = "1.0.98"
-rocket_cors = "0.5.0"
-postgres = { version = "0.15", features = ["with-chrono"] }
+tokio = "1.47.1"
+tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4"] }
+tower-http = { version = "0.6.6", features = ["default", "cors"] }
+tracing = { version = "0.1.41", features = ["default"] }
+tracing-subscriber = "0.3.19"

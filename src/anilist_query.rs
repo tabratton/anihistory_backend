@@ -7,49 +7,48 @@
  */
 
 use crate::anilist_models;
-use log::error;
-use reqwest::blocking::Client;
 use serde_json::from_str;
 use std::collections::HashMap;
+use tracing::error;
 
-pub fn get_id(username: &str) -> Option<anilist_models::User> {
+pub async fn get_id(username: &str) -> Result<Option<anilist_models::User>, anyhow::Error> {
     // Construct query to anilist GraphQL to find corresponding id for username
     let query = USER_QUERY.replace("{}", username.as_ref());
     let mut body = HashMap::new();
     body.insert("query", query);
-    let client = Client::new();
-    let res = client.post(ANILSIT_URL).json(&body).send().unwrap();
-    let res_text = res.text().unwrap();
-    let json: anilist_models::UserResponse = from_str(res_text.as_ref()).unwrap();
+    let client = reqwest::Client::new();
+    let res = client.post(ANILSIT_URL).json(&body).send().await?;
+    let res_text = res.text().await?;
+    let json: anilist_models::UserResponse = from_str(res_text.as_ref())?;
 
     // If the username was valid, there will be some data, else there will be errors
     match json.data.user {
-        Some(user) => Some(user),
+        Some(user) => Ok(Some(user)),
         None => {
             error!(
                 "user_name={} was not found in anilist/external database",
                 username
             );
-            None
+            Ok(None)
         }
     }
 }
 
-pub fn get_lists(id: i32) -> Vec<anilist_models::MediaList> {
+pub async fn get_lists(id: i32) -> Result<Vec<anilist_models::MediaList>, anyhow::Error> {
     let query = LIST_QUERY.replace("{}", id.to_string().as_ref());
     let mut body = HashMap::new();
     body.insert("query", query);
 
-    let client = Client::new();
-    let res = client.post(ANILSIT_URL).json(&body).send().unwrap();
-    let res_text = res.text().unwrap();
-    let json: anilist_models::ListResponse = from_str(res_text.as_ref()).unwrap();
-    json.data.media_list_collection.lists.clone()
+    let client = reqwest::Client::new();
+    let res = client.post(ANILSIT_URL).json(&body).send().await?;
+    let res_text = res.text().await?;
+    let json: anilist_models::ListResponse = from_str(res_text.as_ref())?;
+    Ok(json.data.media_list_collection.lists.clone())
 }
 
-static ANILSIT_URL: &'static str = "https://graphql.anilist.co";
+static ANILSIT_URL: &str = "https://graphql.anilist.co";
 
-static LIST_QUERY: &'static str = "query {
+static LIST_QUERY: &str = "query {
     MediaListCollection(userId: {}, type: ANIME) {
       lists {
         name
@@ -89,7 +88,7 @@ static LIST_QUERY: &'static str = "query {
       }
     }";
 
-static USER_QUERY: &'static str = "query {
+static USER_QUERY: &str = "query {
   	User(name: \"{}\") {
 	  id
       name
