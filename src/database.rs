@@ -5,13 +5,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-
 use crate::models::{ListItem, ListItemMap, ResponseItem};
 use crate::{DbPool, anilist_models, anilist_query, models};
 use anyhow::anyhow;
+use aws_config::Region;
+use aws_config::meta::region::RegionProviderChain;
+use aws_sdk_s3::Client;
+use aws_sdk_s3::primitives::ByteStream;
 use chrono::NaiveDate;
-use rusoto_core::Region;
-use rusoto_s3::{PutObjectRequest, S3, S3Client};
+use std::fmt::{Display, Formatter};
 use tokio_postgres::Row;
 use tracing::{error, info};
 
@@ -127,7 +129,7 @@ pub async fn update_user_profile(
 
     // Download their avatar and upload to S3.
     let content = download_image(&user.avatar.large).await?;
-    upload_to_s3(ImageTypes::User, user.id, ext.clone(), content).await;
+    upload_to_s3(ImageTypes::User, user.id, ext.clone(), content).await?;
 
     match result {
         Ok(_) => Ok(()),
@@ -259,7 +261,12 @@ pub async fn update_entries(id: i32, pool: DbPool) -> Result<(), anyhow::Error> 
                     let closure_id = entry.media.id;
                     let closure_ext = ext.clone();
                     tokio::spawn(async move {
-                        upload_to_s3(ImageTypes::Anime, closure_id, closure_ext, content).await;
+                        match upload_to_s3(ImageTypes::Anime, closure_id, closure_ext, content)
+                            .await
+                        {
+                            Ok(()) => (),
+                            Err(error) => error!("error uploading to S3: {error}"),
+                        }
                     });
                 }
                 Err(error) => {
@@ -270,7 +277,7 @@ pub async fn update_entries(id: i32, pool: DbPool) -> Result<(), anyhow::Error> 
             let start = construct_date(entry.started_at.clone());
             let end = construct_date(entry.completed_at.clone());
 
-            let new_list = models::ListItem {
+            let new_list = ListItem {
                 user_id: id,
                 anime_id: entry.media.id,
                 user_title: entry.media.title.user_preferred.clone(),
@@ -310,33 +317,33 @@ pub async fn update_entries(id: i32, pool: DbPool) -> Result<(), anyhow::Error> 
     Ok(())
 }
 
-async fn upload_to_s3(prefix: ImageTypes, id: i32, ext: String, content: Vec<u8>) {
-    let image_prefix = match prefix {
-        ImageTypes::Anime => "anime",
-        ImageTypes::User => "user",
-    };
+async fn upload_to_s3(
+    prefix: ImageTypes,
+    id: i32,
+    ext: String,
+    content: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let region_provider = RegionProviderChain::first_try(Region::new("us-east-1"));
+    let shared_config = aws_config::from_env().region(region_provider).load().await;
+    let client = Client::new(&shared_config);
 
-    let client = S3Client::new(Region::UsEast1);
     let bucket_name = "anihistory-images";
-    let mime = naive_mime(&ext);
-    let key = format!("assets/images/{}_{}.{}", image_prefix, id, ext);
+    let key = format!("assets/images/{prefix}_{id}.{ext}");
 
-    let put_request = PutObjectRequest {
-        bucket: bucket_name.to_owned(),
-        key: key.clone(),
-        body: Some(content.into()),
-        content_type: Some(mime),
-        acl: Some("public-read".to_owned()),
-        ..PutObjectRequest::default()
-    };
-
-    match client.put_object(put_request).await {
-        Ok(_) => (),
+    let body = ByteStream::from(content);
+    match client
+        .put_object()
+        .bucket(bucket_name)
+        .key(key)
+        .content_type(naive_mime(&ext))
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(_) => Ok(()),
         Err(error) => {
-            error!(
-                "error uploading assets/images/{}_{}.{} to S3. Error: {}",
-                image_prefix, id, ext, error
-            );
+            error!("error uploading assets/images/{prefix}_{id}.{ext} to S3. Error: {error}",);
+            Err(error)?
         }
     }
 }
@@ -375,6 +382,15 @@ fn naive_mime(ext: &String) -> String {
 enum ImageTypes {
     Anime,
     User,
+}
+
+impl Display for ImageTypes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImageTypes::Anime => write!(f, "anime"),
+            ImageTypes::User => write!(f, "user"),
+        }
+    }
 }
 
 impl From<&ListItemMap> for ResponseItem {
