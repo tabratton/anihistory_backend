@@ -8,12 +8,11 @@
 use crate::models::{ListItem, ListItemMap, ResponseItem};
 use crate::{DbPool, anilist_models, anilist_query, models};
 use anyhow::anyhow;
-use aws_config::Region;
-use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use chrono::NaiveDate;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 use tokio_postgres::Row;
 use tracing::{error, info};
 
@@ -99,6 +98,7 @@ pub async fn get_list(
 pub async fn update_user_profile(
     user: anilist_models::User,
     pool: &DbPool,
+    s3_client: Arc<Client>,
 ) -> Result<(), anyhow::Error> {
     let ext = get_ext(&user.avatar.large);
 
@@ -129,7 +129,7 @@ pub async fn update_user_profile(
 
     // Download their avatar and upload to S3.
     let content = download_image(&user.avatar.large).await?;
-    upload_to_s3(ImageTypes::User, user.id, ext.clone(), content).await?;
+    upload_to_s3(s3_client, ImageTypes::User, user.id, ext.clone(), content).await?;
 
     match result {
         Ok(_) => Ok(()),
@@ -209,7 +209,11 @@ pub async fn delete_entries(
     }
 }
 
-pub async fn update_entries(id: i32, pool: DbPool) -> Result<(), anyhow::Error> {
+pub async fn update_entries(
+    id: i32,
+    pool: DbPool,
+    s3_client: Arc<Client>,
+) -> Result<(), anyhow::Error> {
     let lists = anilist_query::get_lists(id).await?;
 
     delete_entries(lists.clone(), id, &pool).await?;
@@ -260,9 +264,16 @@ pub async fn update_entries(id: i32, pool: DbPool) -> Result<(), anyhow::Error> 
                     let content = download_image(&entry.media.cover_image.large).await?;
                     let closure_id = entry.media.id;
                     let closure_ext = ext.clone();
+                    let client = s3_client.clone();
                     tokio::spawn(async move {
-                        match upload_to_s3(ImageTypes::Anime, closure_id, closure_ext, content)
-                            .await
+                        match upload_to_s3(
+                            client,
+                            ImageTypes::Anime,
+                            closure_id,
+                            closure_ext,
+                            content,
+                        )
+                        .await
                         {
                             Ok(()) => (),
                             Err(error) => error!("error uploading to S3: {error}"),
@@ -317,23 +328,21 @@ pub async fn update_entries(id: i32, pool: DbPool) -> Result<(), anyhow::Error> 
     Ok(())
 }
 
+static BUCKET_NAME: &str = "anihistory-images";
+
 async fn upload_to_s3(
+    client: Arc<Client>,
     prefix: ImageTypes,
     id: i32,
     ext: String,
     content: Vec<u8>,
 ) -> Result<(), anyhow::Error> {
-    let region_provider = RegionProviderChain::first_try(Region::new("us-east-1"));
-    let shared_config = aws_config::from_env().region(region_provider).load().await;
-    let client = Client::new(&shared_config);
-
-    let bucket_name = "anihistory-images";
     let key = format!("assets/images/{prefix}_{id}.{ext}");
 
     let body = ByteStream::from(content);
     match client
         .put_object()
-        .bucket(bucket_name)
+        .bucket(BUCKET_NAME)
         .key(key)
         .content_type(naive_mime(&ext))
         .body(body)

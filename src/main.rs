@@ -5,6 +5,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
+use aws_config::Region;
+use aws_config::meta::region::RegionProviderChain;
+use aws_sdk_s3::Client;
 use axum::extract::{FromRef, Path, State};
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
@@ -13,6 +16,7 @@ use axum::{Json, Router};
 use bb8::Pool;
 use bb8_postgres::PostgresConnectionManager;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio_postgres::{Config, NoTls};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -39,16 +43,18 @@ async fn user(State(pool): State<DbPool>, Path(username): Path<String>) -> impl 
 
 async fn update(
     State(database_conn): State<DbPool>,
+    State(s3_client): State<Arc<Client>>,
     Path(username): Path<String>,
 ) -> impl IntoResponse {
     match anilist_query::get_id(username.as_ref()).await {
         Ok(Some(user)) => {
             let pool = database_conn.clone();
-            if let Err(err) = database::update_user_profile(user.clone(), &pool).await {
+            let client = s3_client.clone();
+            if let Err(err) = database::update_user_profile(user.clone(), &pool, client).await {
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
             }
 
-            tokio::spawn(async move { database::update_entries(user.id, pool).await });
+            tokio::spawn(async move { database::update_entries(user.id, pool, s3_client).await });
             Ok((StatusCode::ACCEPTED, "Added to the queue".to_string()))
         }
         Ok(None) => Err((StatusCode::NOT_FOUND, "User not found".to_string())),
@@ -66,16 +72,19 @@ async fn main() -> Result<(), anyhow::Error> {
     let postgres_url = std::env::var("DATABASE_URL")?;
     let postgres_config = Config::from_str(postgres_url.as_ref())?;
     let manager = PostgresConnectionManager::new(postgres_config, NoTls);
-    let pool = Pool::builder().max_size(10).build(manager).await?;
+    let db_pool = Pool::builder().max_size(10).build(manager).await?;
+
+    let region_provider = RegionProviderChain::first_try(Region::new("us-east-1"));
+    let shared_config = aws_config::from_env().region(region_provider).load().await;
+    let s3_client = Arc::new(Client::new(&shared_config));
+
+    let app_state = AppState { db_pool, s3_client };
 
     let allowed_origins = [
         "http://localhost:4200".parse()?,
         "https://anihistory.moe".parse()?,
         "https://www.anihistory.moe".parse()?,
     ];
-
-    let app_state = AppState { pool };
-
     let cors = CorsLayer::new()
         .allow_origin(allowed_origins)
         // allow `GET` and `POST` when accessing the resource
@@ -110,11 +119,18 @@ fn setup_logging() {
 
 #[derive(Clone)]
 struct AppState {
-    pool: DbPool,
+    db_pool: DbPool,
+    s3_client: Arc<Client>,
 }
 
 impl FromRef<AppState> for DbPool {
     fn from_ref(state: &AppState) -> Self {
-        state.pool.clone()
+        state.db_pool.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<Client> {
+    fn from_ref(state: &AppState) -> Self {
+        state.s3_client.clone()
     }
 }
