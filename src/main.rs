@@ -6,15 +6,12 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 use crate::database::Database;
-use aws_config::Region;
-use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::Client;
+use crate::s3::S3Client;
 use axum::extract::{FromRef, Path, State};
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -23,6 +20,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 mod anilist_models;
 mod anilist_query;
 mod database;
+mod s3;
 
 async fn user(State(db): State<Database>, Path(username): Path<String>) -> impl IntoResponse {
     match database::get_list(username.as_ref(), &db).await {
@@ -37,7 +35,7 @@ async fn user(State(db): State<Database>, Path(username): Path<String>) -> impl 
 
 async fn update(
     State(db): State<Database>,
-    State(s3_client): State<Arc<Client>>,
+    State(s3_client): State<S3Client>,
     Path(username): Path<String>,
 ) -> impl IntoResponse {
     match anilist_query::get_id(username.as_ref()).await {
@@ -63,10 +61,7 @@ async fn main() -> Result<(), anyhow::Error> {
     setup_logging();
 
     let db = Database::try_new().await?;
-
-    let region_provider = RegionProviderChain::first_try(Region::new("us-east-1"));
-    let shared_config = aws_config::from_env().region(region_provider).load().await;
-    let s3_client = Arc::new(Client::new(&shared_config));
+    let s3_client = S3Client::new().await;
 
     let app_state = AppState { db, s3_client };
 
@@ -110,7 +105,7 @@ fn setup_logging() {
 #[derive(Clone)]
 struct AppState {
     db: Database,
-    s3_client: Arc<Client>,
+    s3_client: S3Client,
 }
 
 impl FromRef<AppState> for Database {
@@ -119,8 +114,14 @@ impl FromRef<AppState> for Database {
     }
 }
 
-impl FromRef<AppState> for Arc<Client> {
+impl FromRef<AppState> for S3Client {
     fn from_ref(state: &AppState) -> Self {
         state.s3_client.clone()
     }
+}
+
+fn get_ext(url: &str) -> String {
+    let link_parts: Vec<&str> = url.split('/').collect();
+    let split: Vec<&str> = link_parts[link_parts.len() - 1].split(".").collect();
+    split[1].to_owned()
 }

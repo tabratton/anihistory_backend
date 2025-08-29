@@ -1,17 +1,14 @@
 use crate::database::models::{
     Anime, ListItem, ListItemMap, ListResult, ResponseList, RestResponse, User,
 };
-use crate::{anilist_models, anilist_query};
+use crate::s3::{ImageTypes, S3Client};
+use crate::{anilist_models, anilist_query, get_ext};
 use anyhow::anyhow;
-use aws_sdk_s3::Client;
-use aws_sdk_s3::primitives::ByteStream;
 use chrono::NaiveDate;
 use futures_util::TryStreamExt;
 use futures_util::stream::BoxStream;
 use sqlx::postgres::{PgPoolOptions, PgQueryResult};
 use sqlx::{Pool, Postgres};
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
 use tracing::{error, info};
 
 mod models;
@@ -136,13 +133,14 @@ pub async fn get_list(name: &str, db: &Database) -> Result<Option<RestResponse>,
 pub async fn update_user_profile(
     user: anilist_models::User,
     db: &Database,
-    s3_client: Arc<Client>,
+    s3_client: S3Client,
 ) -> Result<(), anyhow::Error> {
     let ext = get_ext(&user.avatar.large);
 
     // Download their avatar and upload to S3.
-    let content = download_image(&user.avatar.large).await?;
-    upload_to_s3(s3_client, ImageTypes::User, user.id, ext.clone(), content).await?;
+    s3_client
+        .upload_to_s3(ImageTypes::User, user.id, &user.avatar.large)
+        .await?;
 
     let new_user = User {
         user_id: user.id,
@@ -213,7 +211,7 @@ pub async fn delete_entries(
 pub async fn update_entries(
     id: i32,
     db: &Database,
-    s3_client: Arc<Client>,
+    s3_client: S3Client,
 ) -> Result<(), anyhow::Error> {
     let lists = anilist_query::get_lists(id).await?;
 
@@ -244,14 +242,13 @@ pub async fn update_entries(
                 error!("error saving anime={:?}. Error: {}", new_anime, error);
             } else {
                 // Download cover images and upload to S3.
-                let content = download_image(&entry.media.cover_image.large).await?;
                 let closure_id = entry.media.id;
-                let closure_ext = ext.clone();
                 let client = s3_client.clone();
+                let url = entry.media.cover_image.large.clone();
                 tokio::spawn(async move {
-                    if let Err(error) =
-                        upload_to_s3(client, ImageTypes::Anime, closure_id, closure_ext, content)
-                            .await
+                    if let Err(error) = client
+                        .upload_to_s3(ImageTypes::Anime, closure_id, &url)
+                        .await
                     {
                         error!("error uploading to S3: {error}");
                     }
@@ -281,35 +278,6 @@ pub async fn update_entries(
     Ok(())
 }
 
-static BUCKET_NAME: &str = "anihistory-images";
-
-async fn upload_to_s3(
-    client: Arc<Client>,
-    prefix: ImageTypes,
-    id: i32,
-    ext: String,
-    content: Vec<u8>,
-) -> Result<(), anyhow::Error> {
-    let key = format!("assets/images/{prefix}_{id}.{ext}");
-
-    let body = ByteStream::from(content);
-    match client
-        .put_object()
-        .bucket(BUCKET_NAME)
-        .key(key)
-        .content_type(naive_mime(&ext))
-        .body(body)
-        .send()
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            error!("error uploading assets/images/{prefix}_{id}.{ext} to S3. Error: {error}",);
-            Err(error)?
-        }
-    }
-}
-
 fn construct_date(date: anilist_models::Date) -> Option<NaiveDate> {
     match date.year {
         Some(year) => match date.month {
@@ -320,37 +288,5 @@ fn construct_date(date: anilist_models::Date) -> Option<NaiveDate> {
             None => None,
         },
         None => None,
-    }
-}
-
-async fn download_image(url: &String) -> Result<Vec<u8>, anyhow::Error> {
-    Ok(reqwest::get(url).await?.bytes().await?.into())
-}
-
-fn get_ext(url: &str) -> String {
-    let link_parts: Vec<&str> = url.split('/').collect();
-    let split: Vec<&str> = link_parts[link_parts.len() - 1].split(".").collect();
-    split[1].to_owned()
-}
-
-fn naive_mime(ext: &String) -> String {
-    if ext.contains("jp") {
-        "image/jpeg".to_owned()
-    } else {
-        format!("image/{}", ext)
-    }
-}
-
-enum ImageTypes {
-    Anime,
-    User,
-}
-
-impl Display for ImageTypes {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ImageTypes::Anime => write!(f, "anime"),
-            ImageTypes::User => write!(f, "user"),
-        }
     }
 }
