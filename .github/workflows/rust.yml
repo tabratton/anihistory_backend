@@ -1,25 +1,21 @@
+name: Rust
+
 on:
   push:
-    branches:
-    - master
+    branches: [ "master" ]
   pull_request:
-    branches:
-    - master
+    branches: [ "master" ]
 
-name: build
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: Rust project
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-            toolchain: nightly
-            override: true
-      - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (Rust)
+        run: cargo build
+      - name: Run tests
+        run: cargo test
