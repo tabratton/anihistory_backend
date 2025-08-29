@@ -5,6 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
+use crate::database::Database;
 use aws_config::Region;
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::Client;
@@ -13,8 +14,6 @@ use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -24,12 +23,9 @@ use tracing_subscriber::{EnvFilter, Registry};
 mod anilist_models;
 mod anilist_query;
 mod database;
-mod models;
 
-type DbPool = Pool<Postgres>;
-
-async fn user(State(pool): State<DbPool>, Path(username): Path<String>) -> impl IntoResponse {
-    match database::get_list(username.as_ref(), &pool).await {
+async fn user(State(db): State<Database>, Path(username): Path<String>) -> impl IntoResponse {
+    match database::get_list(username.as_ref(), &db).await {
         Ok(Some(list)) => Ok(Json(list)),
         Ok(None) => Err((StatusCode::NOT_FOUND, "User or list not found".to_string())),
         Err(_) => Err((
@@ -40,19 +36,18 @@ async fn user(State(pool): State<DbPool>, Path(username): Path<String>) -> impl 
 }
 
 async fn update(
-    State(database_conn): State<DbPool>,
+    State(db): State<Database>,
     State(s3_client): State<Arc<Client>>,
     Path(username): Path<String>,
 ) -> impl IntoResponse {
     match anilist_query::get_id(username.as_ref()).await {
         Ok(Some(user)) => {
-            let pool = database_conn.clone();
             let client = s3_client.clone();
-            if let Err(err) = database::update_user_profile(user.clone(), &pool, client).await {
+            if let Err(err) = database::update_user_profile(user.clone(), &db, client).await {
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
             }
 
-            tokio::spawn(async move { database::update_entries(user.id, pool, s3_client).await });
+            tokio::spawn(async move { database::update_entries(user.id, &db, s3_client).await });
             Ok((StatusCode::ACCEPTED, "Added to the queue".to_string()))
         }
         Ok(None) => Err((StatusCode::NOT_FOUND, "User not found".to_string())),
@@ -67,17 +62,13 @@ async fn update(
 async fn main() -> Result<(), anyhow::Error> {
     setup_logging();
 
-    let postgres_url = std::env::var("DATABASE_URL")?;
-    let db_pool = PgPoolOptions::new()
-        .max_connections(10)
-        .connect(postgres_url.as_ref())
-        .await?;
+    let db = Database::try_new().await?;
 
     let region_provider = RegionProviderChain::first_try(Region::new("us-east-1"));
     let shared_config = aws_config::from_env().region(region_provider).load().await;
     let s3_client = Arc::new(Client::new(&shared_config));
 
-    let app_state = AppState { db_pool, s3_client };
+    let app_state = AppState { db, s3_client };
 
     let allowed_origins = [
         "http://localhost:4200".parse()?,
@@ -118,13 +109,13 @@ fn setup_logging() {
 
 #[derive(Clone)]
 struct AppState {
-    db_pool: DbPool,
+    db: Database,
     s3_client: Arc<Client>,
 }
 
-impl FromRef<AppState> for DbPool {
+impl FromRef<AppState> for Database {
     fn from_ref(state: &AppState) -> Self {
-        state.db_pool.clone()
+        state.db.clone()
     }
 }
 
