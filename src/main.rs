@@ -17,8 +17,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-mod anilist_models;
-mod anilist_query;
+mod anilist;
 mod database;
 mod s3;
 
@@ -38,7 +37,7 @@ async fn update(
     State(s3_client): State<S3Client>,
     Path(username): Path<String>,
 ) -> impl IntoResponse {
-    match anilist_query::get_id(username.as_ref()).await {
+    match anilist::get_id(username.as_ref()).await {
         Ok(Some(user)) => {
             let client = s3_client.clone();
             if let Err(err) = database::update_user_profile(user.clone(), &db, client).await {

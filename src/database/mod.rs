@@ -1,8 +1,9 @@
+use crate::anilist::models::{Date, MediaList};
 use crate::database::models::{
     Anime, ListItem, ListItemMap, ListResult, ResponseList, RestResponse, User,
 };
 use crate::s3::{ImageTypes, S3Client};
-use crate::{anilist_models, anilist_query, get_ext};
+use crate::{anilist, get_ext};
 use anyhow::anyhow;
 use chrono::NaiveDate;
 use futures_util::TryStreamExt;
@@ -131,7 +132,7 @@ pub async fn get_list(name: &str, db: &Database) -> Result<Option<RestResponse>,
 }
 
 pub async fn update_user_profile(
-    user: anilist_models::User,
+    user: anilist::models::User,
     db: &Database,
     s3_client: S3Client,
 ) -> Result<(), anyhow::Error> {
@@ -162,7 +163,7 @@ pub async fn update_user_profile(
 }
 
 pub async fn delete_entries(
-    mut lists: Vec<anilist_models::MediaList>,
+    mut lists: Vec<MediaList>,
     id: i32,
     db: &Database,
 ) -> Result<(), anyhow::Error> {
@@ -213,7 +214,7 @@ pub async fn update_entries(
     db: &Database,
     s3_client: S3Client,
 ) -> Result<(), anyhow::Error> {
-    let lists = anilist_query::get_lists(id).await?;
+    let lists = anilist::get_lists(id).await?;
 
     delete_entries(lists.clone(), id, db).await?;
 
@@ -278,7 +279,7 @@ pub async fn update_entries(
     Ok(())
 }
 
-fn construct_date(date: anilist_models::Date) -> Option<NaiveDate> {
+fn construct_date(date: Date) -> Option<NaiveDate> {
     match date.year {
         Some(year) => match date.month {
             Some(month) => match date.day {
