@@ -14,7 +14,6 @@ futures-util = "0.3.31"
 reqwest = { version = "0.12.23", features = ["json"] }
 serde = "1.0.98"
 serde_derive = "1.0.98"
-serde_json = "1.0.40"
 sqlx = { version = "0.8", features = [ "postgres", "runtime-tokio", "tls-native-tls", "chrono" ] }
 tokio = { version = "1.47.1", features = ["default", "rt-multi-thread"] }
 tower-http = { version = "0.6.6", features = ["default", "cors"] }
