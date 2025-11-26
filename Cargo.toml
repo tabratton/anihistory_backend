@@ -1,3 +1,5 @@
+cargo-features = ["codegen-backend", "profile-rustflags"]
+
 [package]
 name = "anihistory_server"
 version = "0.4.0"
@@ -22,3 +24,12 @@ tracing-subscriber = { version = "0.3.19", features = ["default", "env-filter"] 
 
 [profile.dev.package.sqlx-macros]
 opt-level = 3
+
+#[profile.dev]
+#debug = 0
+#codegen-backend = "cranelift"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
