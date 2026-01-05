@@ -13,7 +13,7 @@ aws-sdk-s3 = "1.103.0"
 axum = { version = "0.8.4", features = ["default", "tokio", "matched-path"] }
 chrono = { version = "0.4.7", features = ["serde"] }
 futures-util = "0.3.31"
-reqwest = { version = "0.12.23", features = ["json"] }
+reqwest = { version = "0.13.1", features = ["json"] }
 serde = "1.0.98"
 serde_derive = "1.0.98"
 sqlx = { version = "0.8", features = [ "postgres", "runtime-tokio", "tls-native-tls", "chrono" ] }
